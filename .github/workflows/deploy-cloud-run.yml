@@ -5,7 +5,7 @@
 # GitHub → Settings → Secrets and variables → Actions:
 #   Required: GCP_REGION, GCP_SA_KEY (JSON)
 #   Optional: GCP_PROJECT_ID (recommended; if unset, the service account key's project_id is used)
-#   CLERK_JWKS_URL, NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+#   CLERK_JWKS_URL, NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY (pk_... — required at Docker build for Next static export)
 #   At least one of: OPENROUTER_API_KEY, OPENAI_API_KEY
 #   Optional: OPENAI_MODEL (default openai/gpt-4o-mini in script)
 #   Optional: CORS_ALLOW_ORIGINS_EXTRA (comma list, e.g. preview or dev origins)
@@ -87,6 +87,15 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
+      - name: Ensure Clerk publishable key (Next.js build bakes it in)
+        run: |
+          if [ -z "$PK" ]; then
+            echo "::error::Add repository secret NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY with your Clerk publishable key (pk_test_... or pk_live_...). Copy from local .env or Clerk Dashboard → API Keys."
+            exit 1
+          fi
+        env:
+          PK: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+
       - name: Build and push image
         env:
           PROJECT: ${{ env.GCP_PROJECT_ID }}
@@ -95,6 +104,10 @@ jobs:
           AR_REPO: ${{ env.AR_REPO }}
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
         run: |
+          if [ -z "$PK" ]; then
+            echo "::error::NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is empty."
+            exit 1
+          fi
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/${IMAGE_NAME}:${GITHUB_SHA}"
           docker build --platform linux/amd64 \
             --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$PK" \
