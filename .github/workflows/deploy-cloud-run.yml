@@ -3,7 +3,8 @@
 # One-time (project/region): Artifact Registry is created in this workflow if missing.
 #
 # GitHub → Settings → Secrets and variables → Actions:
-#   Required: GCP_PROJECT_ID, GCP_REGION, GCP_SA_KEY (JSON)
+#   Required: GCP_REGION, GCP_SA_KEY (JSON)
+#   Optional: GCP_PROJECT_ID (recommended; if unset, the service account key's project_id is used)
 #   CLERK_JWKS_URL, NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 #   At least one of: OPENROUTER_API_KEY, OPENAI_API_KEY
 #   Optional: OPENAI_MODEL (default openai/gpt-4o-mini in script)
@@ -44,10 +45,21 @@ jobs:
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
 
+      # A missing/blank GCP_PROJECT_ID secret was overwriting CLOUDSDK_* with the empty string.
+      - name: Resolve GCP project id
+        run: |
+          P="${{ secrets.GCP_PROJECT_ID }}"
+          if [ -z "$P" ]; then P="${CLOUDSDK_CORE_PROJECT}"; fi
+          if [ -z "$P" ]; then P="${GOOGLE_CLOUD_PROJECT}"; fi
+          if [ -z "$P" ]; then
+            echo "::error::Set repository secret GCP_PROJECT_ID, or use a key JSON that includes a project_id."
+            exit 1
+          fi
+          echo "GCP_PROJECT_ID=$P" >> "$GITHUB_ENV"
+          echo "Using GCP project: $P"
+
       - name: Enable required APIs (idempotent)
         run: gcloud services enable run.googleapis.com artifactregistry.googleapis.com --project "$GCP_PROJECT_ID"
-        env:
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
 
       - name: Ensure Artifact Registry repository exists
         run: |
@@ -60,7 +72,6 @@ jobs:
             --project="$GCP_PROJECT_ID" \
             --description="MedScribe-AI images"
         env:
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCP_REGION: ${{ secrets.GCP_REGION }}
           AR_REPO: ${{ env.AR_REPO }}
 
@@ -69,7 +80,7 @@ jobs:
 
       - name: Build and push image
         env:
-          PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          PROJECT: ${{ env.GCP_PROJECT_ID }}
           REGION: ${{ secrets.GCP_REGION }}
           PK: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           AR_REPO: ${{ env.AR_REPO }}
@@ -85,7 +96,6 @@ jobs:
 
       - name: Deploy to Cloud Run
         env:
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCP_REGION: ${{ secrets.GCP_REGION }}
           CLERK_JWKS_URL: ${{ secrets.CLERK_JWKS_URL }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

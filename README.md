@@ -74,7 +74,7 @@ In **GitHub → Settings → Secrets and variables → Actions**, add:
 
 | Secret | Required | Purpose |
 | --- | --- | --- |
-| `GCP_PROJECT_ID` | Yes | GCP project id. |
+| `GCP_PROJECT_ID` | No* | If unset, the project id from the JSON key is used (set explicitly if the key is cross-project or ambiguous). |
 | `GCP_REGION` | Yes | e.g. `europe-west1` or `us-central1` (used for AR + Cloud Run). |
 | `GCP_SA_KEY` | Yes | **JSON** key for a deploy service account (see below). |
 | `CLERK_JWKS_URL` | Yes | From Clerk dashboard (used by FastAPI to verify JWTs). |
