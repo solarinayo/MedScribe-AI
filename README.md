@@ -88,7 +88,7 @@ Pushes to **`main`** and **manual** runs of **Deploy to Google Cloud Run** build
 **Service account for `GCP_SA_KEY`:** create a key on a custom SA and grant it at least:
 
 - `roles/serviceusage.serviceUsageAdmin` (so `gcloud services enable` works in CI, or pre-enable APIs and skip the need in some setups)
-- `roles/artifactregistry.writer` (or `admin`) in the project for pushing images
+- `roles/artifactregistry.admin` in the project if CI **creates** the Artifact Registry repo, **or** create `medscribe-repo` once in the console / `gcloud` and use `roles/artifactregistry.writer` to push (writer alone **cannot** create a repository)
 - `roles/run.admin` (Cloud Run deploy/update)
 
 Also grant `roles/iam.serviceAccountUser` on the **Cloud Run runtime** service account if the deployer must attach it (common default: project-number-compute@...). Tighter setups can use a dedicated key with [Workload Identity Federation](https://cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines) instead of a long‑lived JSON key.
