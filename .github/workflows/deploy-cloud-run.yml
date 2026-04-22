@@ -1,65 +1,169 @@
-# Optional: deploy MedScribe AI to Cloud Run from GitHub.
+# Deploy MedScribe-AI to Google Cloud Run from GitHub Actions.
 #
-# Required GitHub secrets (example names — adjust to match your GCP setup):
-#   GCP_PROJECT_ID
-#   GCP_REGION (e.g. europe-west1)
-#   GCP_SA_KEY        — JSON key for a service account with Cloud Run + Artifact Registry + Cloud Build permissions
-#   CLERK_JWKS_URL
-#   CLERK_SECRET_KEY
-#   OPENAI_API_KEY
-#   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+# One-time (project/region): Artifact Registry is created in this workflow if missing.
 #
-# For production, prefer Workload Identity Federation instead of a long-lived JSON key.
+# GitHub → Settings → Secrets and variables → Actions:
+#   Required: GCP_PROJECT_ID, GCP_REGION, GCP_SA_KEY (JSON)
+#   CLERK_JWKS_URL, NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+#   At least one of: OPENROUTER_API_KEY, OPENAI_API_KEY
+#   Optional: OPENAI_MODEL (default openai/gpt-4o-mini in script)
+#   Optional: CORS_ALLOW_ORIGINS_EXTRA (comma list, e.g. preview or dev origins)
 
-name: Deploy to Cloud Run
+name: Deploy to Google Cloud Run
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
 
+concurrency:
+  group: cloud-run-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SERVICE_NAME: medscribe-ai
+  AR_REPO: medscribe-repo
+  IMAGE_NAME: medscribe-ai
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@v4
 
-      - id: auth
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Enable required APIs (idempotent)
+        run: gcloud services enable run.googleapis.com artifactregistry.googleapis.com --project "$GCP_PROJECT_ID"
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Ensure Artifact Registry repository exists
+        run: |
+          gcloud artifacts repositories describe "$AR_REPO" \
+            --location="$GCP_REGION" \
+            --project="$GCP_PROJECT_ID" 2>/dev/null || \
+          gcloud artifacts repositories create "$AR_REPO" \
+            --repository-format=docker \
+            --location="$GCP_REGION" \
+            --project="$GCP_PROJECT_ID" \
+            --description="MedScribe-AI images"
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          AR_REPO: ${{ env.AR_REPO }}
 
       - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+        run: gcloud auth configure-docker "${{ secrets.GCP_REGION }}-docker.pkg.dev" --quiet
 
       - name: Build and push image
         env:
           PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           REGION: ${{ secrets.GCP_REGION }}
           PK: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          AR_REPO: ${{ env.AR_REPO }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
         run: |
-          IMAGE="$REGION-docker.pkg.dev/$PROJECT/medscribe-repo/medscribe-ai:${GITHUB_SHA}"
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/${IMAGE_NAME}:${GITHUB_SHA}"
           docker build --platform linux/amd64 \
             --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$PK" \
             -t "$IMAGE" .
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "Pushed: $IMAGE"
 
       - name: Deploy to Cloud Run
         env:
-          REGION: ${{ secrets.GCP_REGION }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          CLERK_JWKS_URL: ${{ secrets.CLERK_JWKS_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL_SECRET: ${{ secrets.OPENAI_MODEL }}
+          CORS_ALLOW_ORIGINS_EXTRA: ${{ secrets.CORS_ALLOW_ORIGINS_EXTRA }}
+          SERVICE_NAME: ${{ env.SERVICE_NAME }}
         run: |
-          gcloud run deploy medscribe-ai \
+          set -euo pipefail
+          : "${IMAGE:?IMAGE not set}"
+
+          EXISTING_URL="$(
+            gcloud run services describe "$SERVICE_NAME" \
+              --region "$GCP_REGION" \
+              --project "$GCP_PROJECT_ID" \
+              --format 'value(status.url)' 2>/dev/null || true
+          )"
+
+          build_cors() {
+            local base="$1"
+            if [ -n "${CORS_ALLOW_ORIGINS_EXTRA:-}" ]; then
+              echo "${base},${CORS_ALLOW_ORIGINS_EXTRA}"
+            else
+              echo "$base"
+            fi
+          }
+
+          PARTS="CLERK_JWKS_URL=${CLERK_JWKS_URL}"
+          if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+            PARTS="${PARTS},OPENROUTER_API_KEY=${OPENROUTER_API_KEY}"
+          fi
+          if [ -n "${OPENAI_API_KEY:-}" ]; then
+            PARTS="${PARTS},OPENAI_API_KEY=${OPENAI_API_KEY}"
+          fi
+          MODEL="${OPENAI_MODEL_SECRET:-openai/gpt-4o-mini}"
+          PARTS="${PARTS},OPENAI_MODEL=${MODEL}"
+
+          if [ -n "$EXISTING_URL" ]; then
+            PARTS="${PARTS},CORS_ALLOW_ORIGINS=$(build_cors "$EXISTING_URL")"
+            if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+              PARTS="${PARTS},OPENROUTER_REFERER=${EXISTING_URL}"
+            fi
+          fi
+
+          gcloud run deploy "$SERVICE_NAME" \
             --image "$IMAGE" \
+            --project "$GCP_PROJECT_ID" \
             --platform managed \
-            --region "$REGION" \
+            --region "$GCP_REGION" \
             --allow-unauthenticated \
             --port 8000 \
             --memory 512Mi \
-            --set-env-vars "CLERK_JWKS_URL=${{ secrets.CLERK_JWKS_URL }}" \
-            --set-env-vars "CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}" \
-            --set-env-vars "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}"
+            --cpu 1 \
+            --min-instances 0 \
+            --max-instances 3 \
+            --timeout 300 \
+            --set-env-vars "$PARTS"
+
+          if [ -z "$EXISTING_URL" ]; then
+            NEW_URL="$(
+              gcloud run services describe "$SERVICE_NAME" \
+                --region "$GCP_REGION" \
+                --project "$GCP_PROJECT_ID" \
+                --format 'value(status.url)'
+            )"
+            UVARS="CORS_ALLOW_ORIGINS=$(build_cors "$NEW_URL")"
+            if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+              UVARS="${UVARS},OPENROUTER_REFERER=${NEW_URL}"
+            fi
+            gcloud run services update "$SERVICE_NAME" \
+              --region "$GCP_REGION" \
+              --project "$GCP_PROJECT_ID" \
+              --update-env-vars "$UVARS"
+            echo "First deploy: set CORS + OPENROUTER_REFERER from $NEW_URL"
+          fi
+
+          echo "--- Service URL ---"
+          gcloud run services describe "$SERVICE_NAME" \
+            --region "$GCP_REGION" \
+            --project "$GCP_PROJECT_ID" \
+            --format 'value(status.url)'

@@ -17,6 +17,8 @@ venv/
 .env
 .env.local
 .env.*.local
+medscribe-deploy-sa.json
+*-deploy-sa.json
 
 # OS / IDE
 .DS_Store
