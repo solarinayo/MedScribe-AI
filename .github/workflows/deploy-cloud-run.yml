@@ -1,0 +1,65 @@
+# Optional: deploy MedScribe AI to Cloud Run from GitHub.
+#
+# Required GitHub secrets (example names — adjust to match your GCP setup):
+#   GCP_PROJECT_ID
+#   GCP_REGION (e.g. europe-west1)
+#   GCP_SA_KEY        — JSON key for a service account with Cloud Run + Artifact Registry + Cloud Build permissions
+#   CLERK_JWKS_URL
+#   CLERK_SECRET_KEY
+#   OPENAI_API_KEY
+#   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+#
+# For production, prefer Workload Identity Federation instead of a long-lived JSON key.
+
+name: Deploy to Cloud Run
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        env:
+          PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          REGION: ${{ secrets.GCP_REGION }}
+          PK: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+        run: |
+          IMAGE="$REGION-docker.pkg.dev/$PROJECT/medscribe-repo/medscribe-ai:${GITHUB_SHA}"
+          docker build --platform linux/amd64 \
+            --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$PK" \
+            -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        env:
+          REGION: ${{ secrets.GCP_REGION }}
+        run: |
+          gcloud run deploy medscribe-ai \
+            --image "$IMAGE" \
+            --platform managed \
+            --region "$REGION" \
+            --allow-unauthenticated \
+            --port 8000 \
+            --memory 512Mi \
+            --set-env-vars "CLERK_JWKS_URL=${{ secrets.CLERK_JWKS_URL }}" \
+            --set-env-vars "CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}" \
+            --set-env-vars "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}"

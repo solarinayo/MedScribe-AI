@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.markdown-content pre {
+  @apply overflow-x-auto rounded-lg bg-gray-900 text-gray-100 p-4 text-sm;
+}
+
+.markdown-content code {
+  @apply text-sm bg-gray-200 dark:bg-gray-700 px-1 py-0.5 rounded;
+}
+
+.markdown-content pre code {
+  @apply bg-transparent p-0 text-gray-100;
+}
